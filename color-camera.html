@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#111">
+  <title>📷 Определитель цвета</title>
+  <style>
+    :root { --bg: #0f1115; --card: #1a1d24; --accent: #4ade80; --text: #e5e7eb; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg); color: var(--text);
+      display: flex; flex-direction: column; align-items: center;
+      min-height: 100vh; padding: 16px;
+    }
+    h2 { font-size: 1.3rem; margin-bottom: 12px; text-align: center; }
+    .video-wrap {
+      position: relative; width: 100%; max-width: 480px;
+      background: #000; border-radius: 14px; overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+    video {
+      width: 100%; height: auto; display: block;
+      transform: scaleX(-1); /* Зеркально для удобства, уберите если нужна реальная ориентация */
+    }
+    #crosshair {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 40px; height: 40px; border: 2px solid rgba(255,255,255,0.85);
+      border-radius: 50%; pointer-events: none;
+      box-shadow: 0 0 0 2px rgba(0,0,0,0.3);
+    }
+    #tap-dot {
+      position: absolute; width: 20px; height: 20px;
+      background: #fff; border: 2px solid #000; border-radius: 50%;
+      transform: translate(-50%, -50%); display: none; pointer-events: none;
+    }
+    canvas { display: none; }
+    .result {
+      margin-top: 16px; background: var(--card); padding: 16px;
+      border-radius: 12px; width: 100%; max-width: 480px;
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+    }
+    .color-preview {
+      width: 70px; height: 70px; border-radius: 50%;
+      border: 3px solid #fff; transition: background 0.15s ease;
+      box-shadow: 0 0 12px rgba(0,0,0,0.4);
+    }
+    .hex { font-size: 1.4rem; font-weight: 600; letter-spacing: 1px; }    .name { font-size: 1rem; opacity: 0.85; }
+    .controls { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; justify-content: center; }
+    button {
+      padding: 10px 16px; border: none; border-radius: 8px;
+      font-size: 0.95rem; font-weight: 500; cursor: pointer;
+      transition: transform 0.1s, opacity 0.2s;
+    }
+    button:active { transform: scale(0.96); }
+    #startBtn { background: var(--accent); color: #000; }
+    #toggleBtn { background: #374151; color: #fff; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .hint { margin-top: 8px; font-size: 0.8rem; opacity: 0.6; text-align: center; }
+  </style>
+</head>
+<body>
+  <h2>📷 Определение цвета через камеру</h2>
+  
+  <div class="video-wrap">
+    <video id="video" autoplay playsinline muted></video>
+    <div id="crosshair"></div>
+    <div id="tap-dot"></div>
+  </div>
+  <canvas id="canvas"></canvas>
+
+  <div class="result">
+    <div class="color-preview" id="colorBox"></div>
+    <div class="hex" id="hexCode">#------</div>
+    <div class="name" id="colorName">Наведите перекрестие на объект</div>
+  </div>
+
+  <div class="controls">
+    <button id="startBtn">🔛 Включить камеру</button>
+    <button id="toggleBtn" disabled>⏸️ Пауза</button>
+  </div>
+  <div class="hint">👆 Тапните по видео, чтобы зафиксировать цвет в точке</div>
+
+<script>
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const startBtn = document.getElementById('startBtn');
+  const toggleBtn = document.getElementById('toggleBtn');
+  const colorBox = document.getElementById('colorBox');
+  const hexCode = document.getElementById('hexCode');
+  const colorName = document.getElementById('colorName');
+  const tapDot = document.getElementById('tap-dot');
+  const crosshair = document.getElementById('crosshair');
+
+  let isRunning = false;
+  let animId = null;  let lastSample = { r: 0, g: 0, b: 0 };
+
+  // Упрощённая, но рабочая палитра ~50 цветов
+  const PALETTE = [
+    ["Красный",255,0,0],["Бордовый",128,0,0],["Алый",255,40,0],
+    ["Оранжевый",255,165,0],["Янтарный",255,120,0],
+    ["Жёлтый",255,255,0],["Лимонный",255,250,150],
+    ["Зелёный",0,128,0],["Салатовый",144,238,144],["Изумрудный",0,201,87],
+    ["Бирюзовый",64,224,208],["Голубой",0,191,255],["Синий",0,0,255],
+    ["Индиго",75,0,130],["Фиолетовый",128,0,128],["Лавандовый",230,230,250],
+    ["Розовый",255,192,203],["Малиновый",220,20,60],["Пурпурный",153,0,153],
+    ["Белый",255,255,255],["Слоновая кость",255,250,240],["Кремовый",255,243,224],
+    ["Бежевый",245,245,220],["Песочный",230,200,150],["Коричневый",139,69,19],
+    ["Шоколадный",123,63,0],["Хаки",195,176,145],["Оливковый",128,128,0],
+    ["Серый",128,128,128],["Стальной",112,128,144],["Серебристый",192,192,192],
+    ["Графитовый",50,50,50],["Чёрный",0,0,0]
+  ];
+
+  function rgbToHex(r,g,b) {
+    return "#" + [r,g,b].map(c => c.toString(16).padStart(2,'0')).join('').toUpperCase();
+  }
+
+  function findClosestColor(r,g,b) {
+    let minDist = Infinity, best = "Неизвестно";
+    for (const [name, pr, pg, pb] of PALETTE) {
+      // Простое евклидово расстояние в RGB
+      const d = Math.sqrt((r-pr)**2 + (g-pg)**2 + (b-pb)**2);
+      if (d < minDist) { minDist = d; best = name; }
+    }
+    return best;
+  }
+
+  function sampleAt(x, y) {
+    if (!canvas.width || !canvas.height) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const p = ctx.getImageData(x, y, 1, 1).data;
+    lastSample = { r: p[0], g: p[1], b: p[2] };
+    const hex = rgbToHex(p[0], p[1], p[2]);
+    colorBox.style.background = hex;
+    hexCode.textContent = hex;
+    colorName.textContent = findClosestColor(p[0], p[1], p[2]);
+  }
+
+  async function startCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+      video.srcObject = stream;
+      startBtn.disabled = true;      toggleBtn.disabled = false;
+      toggleBtn.textContent = "⏸️ Пауза";
+      isRunning = true;
+    } catch (err) {
+      alert("⚠️ Ошибка доступа к камере:\n" + err.message);
+    }
+  }
+
+  video.addEventListener('loadedmetadata', () => {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    if (isRunning) loop();
+  });
+
+  function loop() {
+    if (!isRunning) return;
+    const cx = Math.floor(canvas.width / 2);
+    const cy = Math.floor(canvas.height / 2);
+    sampleAt(cx, cy);
+    animId = requestAnimationFrame(loop);
+  }
+
+  // Тап по видео -> берём цвет в точке нажатия
+  video.addEventListener('pointerup', (e) => {
+    if (!canvas.width) return;
+    const rect = video.getBoundingClientRect();
+    const sx = (e.clientX - rect.left) / rect.width * canvas.width;
+    const sy = (e.clientY - rect.top) / rect.height * canvas.height;
+    
+    sampleAt(Math.floor(sx), Math.floor(sy));
+    
+    // Показываем маркер
+    tapDot.style.left = `${((sx / canvas.width) * rect.width) + rect.left}px`;
+    tapDot.style.top = `${((sy / canvas.height) * rect.height) + rect.top}px`;
+    tapDot.style.display = 'block';
+    crosshair.style.display = 'none';
+    setTimeout(() => { tapDot.style.display = 'none'; crosshair.style.display = 'block'; }, 1200);
+  });
+
+  startBtn.addEventListener('click', startCamera);
+  toggleBtn.addEventListener('click', () => {
+    isRunning = !isRunning;
+    toggleBtn.textContent = isRunning ? "⏸️ Пауза" : "▶️ Продолжить";
+    if (isRunning) loop();
+  });
+
+  // Очистка при закрытии
+  window.addEventListener('beforeunload', () => {
+    if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+    cancelAnimationFrame(animId);  });
+</script>
+</body>
+</html>
